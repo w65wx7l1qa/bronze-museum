@@ -6077,6 +6077,66 @@ function buildRoam() {
   }
   window.addEventListener('resize', onResize);
 
+  // 触屏适配：左下虚拟摇杆移动 + 滑动转视角 + 点按拾取
+  var joy = { x: 0, y: 0, id: null };
+  var joyBase = el('joyBase'), joyKnob = el('joyKnob');
+  if ('ontouchstart' in window && joyBase) {
+    joyBase.classList.add('show');
+    var JR = 40;
+    function joyMove(e) {
+      for (var j = 0; j < e.changedTouches.length; j++) {
+        var t = e.changedTouches[j];
+        if (t.identifier !== joy.id) continue;
+        var b = joyBase.getBoundingClientRect();
+        var dx = t.clientX - (b.left + b.width / 2), dy = t.clientY - (b.top + b.height / 2);
+        var d = Math.hypot(dx, dy); if (d > JR) { dx *= JR / d; dy *= JR / d; }
+        joy.x = dx / JR; joy.y = dy / JR;
+        joyKnob.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
+      }
+    }
+    joyBase.addEventListener('touchstart', function(e) { e.preventDefault(); joy.id = e.changedTouches[0].identifier; joyMove(e); }, { passive: false });
+    joyBase.addEventListener('touchmove', function(e) { e.preventDefault(); joyMove(e); }, { passive: false });
+    joyBase.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      for (var j = 0; j < e.changedTouches.length; j++) if (e.changedTouches[j].identifier === joy.id) { joy.x = 0; joy.y = 0; joy.id = null; joyKnob.style.transform = ''; }
+    }, { passive: false });
+  }
+  var tlook = null;
+  function tapPick(cx, cy) {
+    var r = dom.getBoundingClientRect();
+    st.ray.setFromCamera(new THREE.Vector2(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1), camera);
+    var hits = st.ray.intersectObjects(scene.children, true);
+    for (var h = 0; h < hits.length; h++) {
+      var ud = hits[h].object.userData;
+      if (ud && ud.item) { if (hits[h].distance < 10) openDetail(ALL_ITEMS.indexOf(ud.item)); return; }
+      if (hits[h].distance > 10) break;
+    }
+  }
+  dom.addEventListener('touchstart', function(e) {
+    if (tlook === null) { var t = e.changedTouches[0]; tlook = { id: t.identifier, x: t.clientX, y: t.clientY, moved: 0 }; }
+  }, { passive: true });
+  dom.addEventListener('touchmove', function(e) {
+    if (!tlook) return;
+    for (var i = 0; i < e.changedTouches.length; i++) {
+      var t = e.changedTouches[i];
+      if (t.identifier === tlook.id) {
+        var dx = t.clientX - tlook.x, dy = t.clientY - tlook.y;
+        tlook.x = t.clientX; tlook.y = t.clientY; tlook.moved += Math.abs(dx) + Math.abs(dy);
+        if (!st.tour) { st.yaw -= dx * 0.0045; st.pitch = Math.max(-1.15, Math.min(1.15, st.pitch - dy * 0.004)); }
+      }
+    }
+  }, { passive: true });
+  dom.addEventListener('touchend', function(e) {
+    if (!tlook) return;
+    for (var i = 0; i < e.changedTouches.length; i++) {
+      var t = e.changedTouches[i];
+      if (t.identifier === tlook.id) {
+        if (tlook.moved < 8 && roamActive && !st.tour) tapPick(t.clientX, t.clientY);
+        tlook = null;
+      }
+    }
+  });
+
   // 模型逐个加载（带进度）
   var loaded = 0;
   (function loadNext(i) {
@@ -6109,10 +6169,22 @@ function buildRoam() {
 
   // 动画循环
   var clock = new THREE.Clock();
+  // FPS 统计 + 自适应画质：持续低于 30fps 时降级像素比
+  var fpsN = 0, fpsT = 0, lowStreak = 0, degraded = false, fpsEl = el('roamFps');
   (function animate() {
     requestAnimationFrame(animate);
     if (!roamActive || st.paused) return;
     var dt = Math.min(clock.getDelta(), 0.05);
+    fpsN++; fpsT += dt;
+    if (fpsT >= 0.5) {
+      var f = fpsN / fpsT;
+      if (fpsEl) fpsEl.textContent = Math.round(f) + ' FPS';
+      if (!degraded) {
+        if (f < 30) { lowStreak++; if (lowStreak >= 4) { degraded = true; renderer.setPixelRatio(1.0); renderer.setSize(stage.clientWidth, stage.clientHeight); } }
+        else lowStreak = 0;
+      }
+      fpsN = 0; fpsT = 0;
+    }
     if (st.tour) {
       var T = st.tour;
       T.t += dt / T.dur;
@@ -6135,6 +6207,12 @@ function buildRoam() {
       if (st.keys.KeyS || st.keys.ArrowDown) st.pos.addScaledVector(f, -sp);
       if (st.keys.KeyA || st.keys.ArrowLeft) st.pos.addScaledVector(r, -sp);
       if (st.keys.KeyD || st.keys.ArrowRight) st.pos.addScaledVector(r, sp);
+      // 虚拟摇杆移动（触屏）
+      if (joy.id !== null && (joy.x || joy.y)) {
+        var spj = 3.8 * dt;
+        st.pos.addScaledVector(f, -joy.y * spj);
+        st.pos.addScaledVector(r, joy.x * spj);
+      }
       // 边界与展台碰撞
       var hr = Math.hypot(st.pos.x, st.pos.z);
       var maxR = ROAM_R - 1.4;
@@ -6603,4 +6681,3 @@ initHome();
 
 </body>
 </html>
-
